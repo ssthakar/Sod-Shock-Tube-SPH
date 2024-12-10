@@ -1,4 +1,4 @@
 #!/bin/bash
 
 echo "cleaning directory"
-rm -rf *.dat *.mp4 *.out
+rm -rf ./output/*.dat *.mp4 *.out

@@ -1,0 +1,118 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\title{\textbf{CE-791 Mini Project} \\ Parallezing a serial SPH code for Sod Shock tube}
+\author{Shridhar S Thakar, Sanket Yannuwar}
+
+\begin{document}
+\maketitle 
+\section{Introduction}
+One of the main issues faced when solving compressible flows numerically are the discontinuities that arise due to shocks. 
+While conventional Computational Fluid Dynamics (CFD) solves this problem by; adding numerical diffusion, `Higher Order schemes' that can capture direction of information flow, or by solving a local `Reimann Problem' at the shock through flux splitting. 
+This is often computatinally expensive, and prone to numerical oscillations.
+A more recent approach to tackle such a problem is the use of a lagrangian approach called Smooth Particle Hydrodynamics. As the goal of this report is to document the parallelization of the code,  only a brief description is provided in the next section. 
+For a detailed and thorough explaination, the reader is referred to.
+\section{Smooth Particle Hydrodynamics}
+The compressible Euler equation for a fluid packet $r_i$ is given by:
+\begin{equation}
+  \frac{\partial ^2 r_i}{\partial t ^2} = -\displaystyle\frac{1}{\rho_i}\nabla P
+  \label{eq:governing equation}
+\end{equation}
+where, $\rho_i$ is the density of the packet/particle, while $\nabla P$ is the pressure gradient. 
+
+The density in SPH is defined by using a normalized smoothing kernel $W(r)$:
+\begin{align}
+  \int W(r) dr = 1
+\end{align}
+The smoothed density is now defined as:
+\begin{equation}
+  \rho(r) = \int W (r - r^\prime)\rho (r^\prime)dr^\prime
+  \label{eq:smoothed density}
+\end{equation}
+To close the equation given by Eq. \ref{eq:smoothed density} we use Monte Carlo Integration:
+\begin{equation}
+  \rho_i = \sum_{j} m_j W (r_i -r_j)
+  \label{eq:monte carlo integration}
+\end{equation}
+where $r_j$ are the surrounding particles and $m_j$ is their mass. A keep point to note is that each particle contributes to its own density in the Monte Carlo Integration.
+The governing equation defined by Eq. \ref{eq:governing equation} is now transformed into:
+\begin{equation}
+  \frac{\partial ^2 r_i}{\partial t^2} = -\sum_{j} m_j\left(\frac{P_i}{\rho_i ^2} + \frac{P_j}{\rho_j ^2}\right)\nabla W \left(r_i-r_j\right)
+  \label{eq:Discretized equation}
+\end{equation}
+We further close the system by using the ideal gas state for coupling pressure and internal energy:
+\begin{equation}
+    P = e\rho (\gamma -1)
+    \label{eq:ideal gas state}
+\end{equation}
+The euler's energy equation for compressible flow is given by:
+\begin{equation}
+  \frac{\partial e}{\partial t} = -\displaystyle\frac{P}{\rho} \frac{\partial v}{\partial x}
+    \label{eq:energy equation}
+\end{equation}  
+This gives use the lagrangian equaivalent form for the energy equation as:
+\begin{equation}
+ \frac{\partial  e_i}{\partial t} = \sum_{j} m_j \left(\frac{P_i}{\rho_i ^2} + \frac{P_j}{\rho_j ^2}\right) \left(v_i - v_j\right)\nabla W \left(r_i-r_j\right)
+    \label{eq:lagrangian energy equation}
+\end{equation}
+\subsection{Initialization}
+A total of 400 particles in the sod shock tube of dimensionless length 1.2, were intialized as follows:
+\begin{equation}
+x_i = \begin{cases}
+i(\Delta x/4) - x_0 + \Delta x/4 & \text{if } 0 \leq i \leq 319, \\
+(i - 320)\Delta x & \text{if } 320 \leq i \leq 399,
+\end{cases}
+\end{equation}
+where $x_0 = 0.6$ and $\Delta x = x_0 / 80$. The particles on the left are low density  of $0.25$, while the particles on the right have a high density $1$.
+The energy is initialized as:
+\begin{equation}
+e_i = \begin{cases}
+2.5 & \text{if } 0 \leq i \leq 319, \\
+1.795 & \text{if } 320 \leq i \leq 399,
+\end{cases}
+\end{equation}
+\section{Parallelizing Procedure}
+The simulation is parallelized using the Message Passing Interface (MPI), where the particles are distributed across multiple processes. The orignal serial code (github repository) is linked in the references. The parallel implementation is submitted as a separatefile.
+Each process handles a
+subset of the particles, performs computations on them, and shares necessary information with other processes. As each particle is defined as a struct in the serial code, we need to define an mpi object, as mpi by default only supports primitive types like int, double and float.
+\\
+The main steps in the parallelization procedure are as follows:
+\begin{algorithm}[H]
+\caption{Parallelization of SPH Simulation}
+\begin{algorithmic}[1]
+\STATE Initialize MPI environment
+\STATE Get the rank of the process and the total number of processes
+\STATE Create MPI datatype for the particle structure
+\STATE Divide particles across processes:
+\STATE \quad \texttt{localParticles} $\leftarrow$ Subset of particles for each process
+\STATE Perform particle initialization for each process (local state)
+\STATE \textbf{For each timestep:}
+\STATE \quad \texttt{record(localParticles, step)} \COMMENT{Record initial state of particles}
+\STATE \quad \texttt{start\_timer()} \COMMENT{Start performance timer}
+\STATE \quad \textbf{For each particle in localParticles:}
+\STATE \quad \quad Half-kick update on velocity and energy
+\STATE \quad \quad Drift update on position
+\STATE \quad \quad Handle boundary conditions if applicable
+\STATE \quad \quad \texttt{update(localParticles)} \COMMENT{Compute primitive variables}
+\STATE \quad \quad \textbf{If Artificial Viscosity is enabled:}
+\STATE \quad \quad \quad Compute viscosity force and add it to the acceleration
+\STATE \quad \quad \quad Compute power due to viscosity
+\STATE \quad \quad Second half-kick update on velocity and energy
+\STATE \quad \texttt{update(localParticles)} \COMMENT{Update with final values}
+\STATE \quad \texttt{record(localParticles, step)} \COMMENT{write to file final state of particles}
+\STATE \quad Gather all particles to rank 0:
+\STATE \quad \quad \texttt{allParticles} $\leftarrow$ All processes gathered on rank 0
+\STATE \quad Calculate performance metrics for the timestep
+\STATE \quad \texttt{stop\_timer()} \COMMENT{Stop performance timer}
+\STATE \textbf{End for each timestep}
+\STATE Gather total performance (FLOPS) across all processes
+\STATE Display total execution time and performance on rank 0
+\STATE Finalize MPI environment
+\end{algorithmic}
+\end{algorithm}
+
+\section{Results and Comparison}
+
+\end{document}
